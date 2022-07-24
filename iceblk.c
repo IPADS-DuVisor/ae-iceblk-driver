@@ -104,7 +104,11 @@ static irqreturn_t iceblk_isr(int irq, void *data)
 
 static struct iceblk_port *iceblk_req_port(struct request *req)
 {
+#if 0
 	return (struct iceblk_port *) req->rq_disk->private_data;
+#else
+	return (struct iceblk_port *) req->q->disk->private_data;
+#endif
 }
 
 static void iceblk_queue_request(struct request *req, int write)
@@ -216,6 +220,7 @@ static int iceblk_setup(struct iceblk_port *port)
 	uint32_t nsectors = ioread32(port->iomem + ICEBLK_NSECTORS);
 	struct device *dev = port->dev;
 	uint32_t i, ntags, max_req_len;
+    int err;
 
 	if (nsectors == 0) {
 		dev_err(dev, "No disk attached.\n");
@@ -237,6 +242,7 @@ static int iceblk_setup(struct iceblk_port *port)
 		INIT_LIST_HEAD(&port->reqbuf[i]);
 
 	spin_lock_init(&port->lock);
+#if 0
 	port->queue = blk_mq_init_sq_queue(&port->tag_set,
 		&iceblk_mq_ops, 2, BLK_MQ_F_SHOULD_MERGE);
 	if (IS_ERR(port->queue)) {
@@ -250,6 +256,26 @@ static int iceblk_setup(struct iceblk_port *port)
 	port->gd = alloc_disk(ICEBLK_MINORS);
 	if (!port->gd)
 		goto exit_gendisk;
+#else
+    err = blk_mq_alloc_sq_tag_set(&port->tag_set,
+		&iceblk_mq_ops, 2, BLK_MQ_F_SHOULD_MERGE);
+    if (err) {
+		dev_err(dev, "Could not initialize blk_queue\n");
+		goto exit_queue;
+	}
+
+    port->gd = blk_mq_alloc_disk(&port->tag_set, port);
+    if (IS_ERR(port->gd)) {
+        err = PTR_ERR(port->gd);
+		goto exit_gendisk;
+    }
+    port->gd->minors = ICEBLK_MINORS;
+    port->queue = port->gd->queue;
+
+	blk_queue_logical_block_size(port->queue, ICEBLK_SECTOR_SIZE);
+	blk_queue_max_segments(port->queue, 1);
+	blk_queue_max_hw_sectors(port->queue, max_req_len);
+#endif
 	port->gd->major = port->major;
 	port->gd->first_minor = 0;
 	port->gd->fops = &iceblk_fops;
@@ -269,7 +295,11 @@ exit_gendisk:
 	blk_cleanup_queue(port->queue);
 	blk_mq_free_tag_set(&port->tag_set);
 exit_queue:
+#if 0
 	return -ENOMEM;
+#else
+	return err;
+#endif
 }
 
 static int iceblk_probe(struct platform_device *pdev)
